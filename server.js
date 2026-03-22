@@ -69,6 +69,7 @@ function setup(callback) {
 
 // Get video info
 app.post('/api/info', (req, res) => {
+  console.log('📥 /api/info called with:', req.body);
   const { url } = req.body;
   if (!url) return res.status(400).json({ message: 'No URL provided' });
   exec(`"${YTDLP}" --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`, (err, stdout, stderr) => {
