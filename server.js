@@ -4,6 +4,7 @@ const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
+const http = require('http');
 const app = express();
 
 app.use(cors());
@@ -12,32 +13,58 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'clipaidownloader.html')));
 
 const YTDLP = path.join(__dirname, 'yt-dlp');
+const FFMPEG = path.join(__dirname, 'ffmpeg');
 const DOWNLOAD_DIR = '/tmp/clipai';
 
-// Make sure download dir exists
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
-function setupYtDlp(callback) {
-  if (fs.existsSync(YTDLP)) {
-    console.log('✅ yt-dlp already exists');
-    exec('ffmpeg -version', (err, stdout) => {
-      console.log(err ? '❌ FFmpeg NOT found' : '✅ FFmpeg found');
-    });
-    return callback();
-  }
-  console.log('⬇️ Downloading yt-dlp...');
-  const file = fs.createWriteStream(YTDLP);
-  https.get('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', (res) => {
+function downloadFile(url, dest, callback) {
+  const file = fs.createWriteStream(dest);
+  const protocol = url.startsWith('https') ? https : http;
+  protocol.get(url, (res) => {
     if (res.statusCode === 302 || res.statusCode === 301) {
-      https.get(res.headers.location, (res2) => {
-        res2.pipe(file);
-        file.on('finish', () => { file.close(); fs.chmodSync(YTDLP, '755'); console.log('✅ yt-dlp downloaded!'); callback(); });
-      });
+      file.close();
+      fs.unlinkSync(dest);
+      downloadFile(res.headers.location, dest, callback);
     } else {
       res.pipe(file);
-      file.on('finish', () => { file.close(); fs.chmodSync(YTDLP, '755'); console.log('✅ yt-dlp downloaded!'); callback(); });
+      file.on('finish', () => { file.close(); callback(null); });
     }
-  }).on('error', (err) => { console.error('❌ Failed:', err); callback(); });
+  }).on('error', (err) => { fs.unlinkSync(dest); callback(err); });
+}
+
+function setup(callback) {
+  let pending = 0;
+
+  // Setup yt-dlp
+  if (!fs.existsSync(YTDLP)) {
+    pending++;
+    console.log('⬇️ Downloading yt-dlp...');
+    downloadFile('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', YTDLP, (err) => {
+      if (err) console.error('❌ yt-dlp failed:', err);
+      else { fs.chmodSync(YTDLP, '755'); console.log('✅ yt-dlp ready!'); }
+      if (--pending === 0) callback();
+    });
+  } else {
+    console.log('✅ yt-dlp already exists');
+  }
+
+  // Setup ffmpeg
+  if (!fs.existsSync(FFMPEG)) {
+    pending++;
+    console.log('⬇️ Downloading ffmpeg...');
+    // Static ffmpeg binary for Linux x64
+    const ffmpegUrl = 'https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-linux-x64';
+    downloadFile(ffmpegUrl, FFMPEG, (err) => {
+      if (err) console.error('❌ ffmpeg failed:', err);
+      else { fs.chmodSync(FFMPEG, '755'); console.log('✅ ffmpeg ready!'); }
+      if (--pending === 0) callback();
+    });
+  } else {
+    console.log('✅ ffmpeg already exists');
+  }
+
+  if (pending === 0) callback();
 }
 
 // Get video info
@@ -55,7 +82,7 @@ app.post('/api/info', (req, res) => {
   });
 });
 
-// Download - save to /tmp then send
+// Download
 app.get('/api/download', (req, res) => {
   const { url, format, quality } = req.query;
   if (!url) return res.status(400).send('No URL');
@@ -68,30 +95,29 @@ app.get('/api/download', (req, res) => {
     outputPath = path.join(DOWNLOAD_DIR, filename + '.mp3');
     dlFilename = 'audio.mp3';
     contentType = 'audio/mpeg';
-    cmd = `"${YTDLP}" -x --audio-format mp3 --audio-quality ${bitrate}K -o "${outputPath}" "${url}"`;
+    cmd = `"${YTDLP}" --ffmpeg-location "${FFMPEG}" -x --audio-format mp3 --audio-quality ${bitrate}K -o "${outputPath}" "${url}"`;
   } else {
     const heights = { '480p': 480, '720p': 720, '1080p': 1080, '4K': 2160 };
     const h = heights[quality] || 720;
     outputPath = path.join(DOWNLOAD_DIR, filename + '.mp4');
     dlFilename = 'video.mp4';
     contentType = 'video/mp4';
-    cmd = `"${YTDLP}" -f "bestvideo[height<=${h}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${h}][ext=mp4]/best[height<=${h}]" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
+    cmd = `"${YTDLP}" --ffmpeg-location "${FFMPEG}" -f "bestvideo[height<=${h}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${h}][ext=mp4]/best[height<=${h}]" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
   }
 
-  console.log('Starting download:', cmd);
+  console.log('Running:', cmd);
 
-  exec(cmd, { maxBuffer: 1024 * 1024 * 100 }, (err, stdout, stderr) => {
+  exec(cmd, { maxBuffer: 1024 * 1024 * 100, timeout: 600000 }, (err, stdout, stderr) => {
     if (err) {
       console.error('Error:', stderr);
-      return res.status(500).json({ message: 'Conversion failed' });
+      return res.status(500).json({ message: 'Conversion failed', error: stderr });
     }
-
     if (!fs.existsSync(outputPath)) {
-      return res.status(500).json({ message: 'File not created', error: stderr, cmd: cmd });
+      return res.status(500).json({ message: 'File not created', error: stderr });
     }
 
     const stat = fs.statSync(outputPath);
-    console.log('File size:', stat.size);
+    console.log('✅ File ready, size:', stat.size);
 
     res.setHeader('Content-Disposition', `attachment; filename="${dlFilename}"`);
     res.setHeader('Content-Type', contentType);
@@ -99,15 +125,12 @@ app.get('/api/download', (req, res) => {
 
     const stream = fs.createReadStream(outputPath);
     stream.pipe(res);
-
     stream.on('close', () => {
-      setTimeout(() => {
-        try { fs.unlinkSync(outputPath); } catch(e) {}
-      }, 5000);
+      setTimeout(() => { try { fs.unlinkSync(outputPath); } catch(e) {} }, 5000);
     });
   });
 });
 
-setupYtDlp(() => {
+setup(() => {
   app.listen(3000, () => console.log('✅ Clipai running at http://localhost:3000'));
 });
