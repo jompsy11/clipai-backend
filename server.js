@@ -20,6 +20,9 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 function setupYtDlp(callback) {
   if (fs.existsSync(YTDLP)) {
     console.log('✅ yt-dlp already exists');
+    exec('ffmpeg -version', (err, stdout) => {
+      console.log(err ? '❌ FFmpeg NOT found' : '✅ FFmpeg found');
+    });
     return callback();
   }
   console.log('⬇️ Downloading yt-dlp...');
