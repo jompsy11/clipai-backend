@@ -924,9 +924,14 @@
       document.getElementById('video-info').textContent =
         `${selectedFormat.toUpperCase()} • ${selectedQuality || ''} ${data.duration ? '• ' + data.duration : ''}`;
 
-      if (data.thumbnail) {
+      // Get thumbnail from YouTube directly
+      const urlInput = document.getElementById('url-input').value;
+      const vidMatch = urlInput.match(/(?:v=|youtu\.be\/|shorts\/)([^&\n?#]+)/);
+      const vidId = vidMatch ? vidMatch[1] : null;
+      const thumbUrl = vidId ? `https://img.youtube.com/vi/${vidId}/mqdefault.jpg` : (data.thumbnail || null);
+      if (thumbUrl) {
         const img = document.getElementById('thumb-img');
-        img.src = data.thumbnail;
+        img.src = thumbUrl;
         img.style.display = 'block';
         document.getElementById('thumb-placeholder').style.display = 'none';
       }
@@ -936,8 +941,12 @@
 
       const dlBtn = document.getElementById('download-link');
       if (data.downloadUrl) {
-        dlBtn.href = data.downloadUrl;
-        dlBtn.download = `${data.title || 'download'}.${selectedFormat}`;
+        const fixedUrl = data.downloadUrl
+          .replace('http://localhost:3000', 'https://clipai-backend-production-a77f.up.railway.app')
+          .replace('https://localhost:3000', 'https://clipai-backend-production-a77f.up.railway.app');
+        dlBtn.href = fixedUrl;
+        dlBtn.target = '_blank';
+        dlBtn.innerHTML = '⬇️ Download File';
         dlBtn.style.display = 'flex';
       } else if (isDemo) {
         dlBtn.style.display = 'flex';
