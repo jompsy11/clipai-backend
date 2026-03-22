@@ -36,6 +36,10 @@ function downloadFile(url, dest, callback) {
 function setup(callback) {
   let pending = 0;
 
+  // Always re-download yt-dlp to ensure correct binary
+  if (fs.existsSync(YTDLP)) fs.unlinkSync(YTDLP);
+  if (fs.existsSync(FFMPEG)) fs.unlinkSync(FFMPEG);
+
   // Setup yt-dlp
   if (!fs.existsSync(YTDLP)) {
     pending++;
