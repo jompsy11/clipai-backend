@@ -71,8 +71,8 @@ function setup(callback) {
 app.post('/api/info', (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ message: 'No URL provided' });
-  exec(`"${YTDLP}" --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`, (err, stdout) => {
-    if (err) return res.status(500).json({ message: 'Could not fetch video info' });
+  exec(`"${YTDLP}" --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`, (err, stdout, stderr) => {
+    if (err) return res.status(500).json({ message: 'Could not fetch video info', error: stderr, stdout: stdout });
     const parts = (stdout || '').trim().split('|||');
     const title = parts[0] || 'Video';
     const duration = parts[1] || '';
