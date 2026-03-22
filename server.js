@@ -72,8 +72,13 @@ app.post('/api/info', (req, res) => {
   console.log('📥 /api/info called with:', req.body);
   const { url } = req.body;
   if (!url) return res.status(400).json({ message: 'No URL provided' });
-  exec(`"${YTDLP}" --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`, (err, stdout, stderr) => {
-    if (err) return res.status(500).json({ message: 'Could not fetch video info', error: stderr, stdout: stdout });
+  const infoCmd = `"${YTDLP}" --no-playlist --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`;
+  console.log('Running:', infoCmd);
+  exec(infoCmd, { timeout: 60000 }, (err, stdout, stderr) => {
+    console.log('stdout:', stdout);
+    console.log('stderr:', stderr);
+    console.log('err:', err);
+    if (err || !stdout.trim()) return res.status(500).json({ message: 'Could not fetch video info', error: stderr });
     const parts = (stdout || '').trim().split('|||');
     const title = parts[0] || 'Video';
     const duration = parts[1] || '';
