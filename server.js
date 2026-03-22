@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
@@ -30,57 +30,64 @@ function setupYtDlp(callback) {
       res.pipe(file);
       file.on('finish', () => { file.close(); fs.chmodSync(YTDLP, '755'); console.log('✅ yt-dlp downloaded!'); callback(); });
     }
-  }).on('error', (err) => { console.error('❌ Failed to download yt-dlp:', err); callback(); });
+  }).on('error', (err) => { console.error('❌ Failed:', err); callback(); });
 }
 
-app.post('/api/convert', (req, res) => {
-  const { url, format, quality } = req.body;
+// Get video info only
+app.post('/api/info', (req, res) => {
+  const { url } = req.body;
   if (!url) return res.status(400).json({ message: 'No URL provided' });
 
-  const outputDir = path.join(__dirname, 'downloads');
-  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
-
-  const filename = `download_${Date.now()}`;
-  let outputPath, cmd;
-
-  if (format === 'mp3') {
-    const bitrate = quality ? quality.replace(' kbps', '') : '192';
-    outputPath = path.join(outputDir, filename + '.mp3');
-    cmd = `"${YTDLP}" -x --audio-format mp3 --audio-quality ${bitrate}K -o "${outputPath}" "${url}"`;
-  } else {
-    const heights = { '480p': 480, '720p': 720, '1080p': 1080, '4K': 2160 };
-    const h = heights[quality] || 720;
-    outputPath = path.join(outputDir, filename + '.mp4');
-    cmd = `"${YTDLP}" -f "bestvideo[height<=${h}]+bestaudio/best[height<=${h}]" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
-  }
-
-  // Get video info first
   exec(`"${YTDLP}" --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`, (err, stdout) => {
+    if (err) return res.status(500).json({ message: 'Could not fetch video info' });
     const parts = (stdout || '').trim().split('|||');
     const title = parts[0] || 'Video';
     const duration = parts[1] || '';
     const videoId = parts[2] || '';
-    // Use YouTube's direct thumbnail URL instead of yt-dlp's
     const thumbnail = videoId ? `https://img.youtube.com/vi/${videoId}/mqdefault.jpg` : null;
-
-    exec(cmd, (err2, stdout2, stderr2) => {
-      if (err2) {
-        console.error('Conversion error:', stderr2);
-        return res.status(500).json({ message: 'Conversion failed: ' + stderr2 });
-      }
-
-      // Use full Railway URL for download link
-      const host = req.headers.host;
-      const protocol = req.headers['x-forwarded-proto'] || 'https';
-      const downloadUrl = `${protocol}://${host}/downloads/${path.basename(outputPath)}`;
-
-      res.json({ title, thumbnail, duration, downloadUrl });
-      setTimeout(() => { try { fs.unlinkSync(outputPath); } catch(e){} }, 30 * 60 * 1000);
-    });
+    res.json({ title, duration, thumbnail, videoId });
   });
 });
 
-app.use('/downloads', express.static(path.join(__dirname, 'downloads')));
+// Stream download directly to user
+app.get('/api/download', (req, res) => {
+  const { url, format, quality } = req.query;
+  if (!url) return res.status(400).send('No URL');
+
+  let ytdlpArgs, filename, contentType;
+
+  if (format === 'mp3') {
+    const bitrate = quality ? quality.replace(' kbps', '') : '192';
+    filename = 'audio.mp3';
+    contentType = 'audio/mpeg';
+    ytdlpArgs = [
+      '-x', '--audio-format', 'mp3',
+      '--audio-quality', `${bitrate}K`,
+      '-o', '-',
+      url
+    ];
+  } else {
+    const heights = { '480p': 480, '720p': 720, '1080p': 1080, '4K': 2160 };
+    const h = heights[quality] || 720;
+    filename = 'video.mp4';
+    contentType = 'video/mp4';
+    ytdlpArgs = [
+      '-f', `bestvideo[height<=${h}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${h}][ext=mp4]/best[height<=${h}]`,
+      '--merge-output-format', 'mp4',
+      '-o', '-',
+      url
+    ];
+  }
+
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Type', contentType);
+
+  const ytdlp = spawn(YTDLP, ytdlpArgs);
+  ytdlp.stdout.pipe(res);
+  ytdlp.stderr.on('data', (data) => console.error('yt-dlp:', data.toString()));
+  ytdlp.on('error', (err) => { console.error('spawn error:', err); res.status(500).end(); });
+  req.on('close', () => ytdlp.kill());
+});
 
 setupYtDlp(() => {
   app.listen(3000, () => console.log('✅ Clipai running at http://localhost:3000'));
