@@ -141,6 +141,70 @@ app.get('/api/download', (req, res) => {
   });
 });
 
+// ── YouTube → AssemblyAI upload endpoint (for ClipAI main app) ──
+// ADD THIS just before: setup(() => {
+
+app.post('/api/youtube-upload', (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'url is required' });
+
+  const ASSEMBLYAI_KEY = process.env.ASSEMBLYAI_API_KEY;
+  if (!ASSEMBLYAI_KEY) return res.status(500).json({ error: 'ASSEMBLYAI_API_KEY not set' });
+
+  const ts = Date.now();
+  const outputPath = path.join(DOWNLOAD_DIR, 'clipai_yt_' + ts + '.m4a');
+
+  console.log('[ClipAI] Downloading YouTube audio:', url.substring(0, 60));
+
+  const cmd = `"${YTDLP}" -f "bestaudio[ext=m4a]/bestaudio/best" --no-playlist --no-warnings -o "${outputPath}" "${url}"`;
+
+  exec(cmd, { timeout: 300000, maxBuffer: 1024 * 1024 * 10 }, async (err, stdout, stderr) => {
+    if (err) {
+      console.error('[ClipAI] yt-dlp error:', stderr);
+      return res.status(500).json({ error: 'YouTube download failed: ' + (stderr || err.message).slice(0, 200) });
+    }
+
+    // Find actual file (yt-dlp may change extension)
+    let actualFile = outputPath;
+    if (!fs.existsSync(actualFile)) {
+      const files = fs.readdirSync(DOWNLOAD_DIR)
+        .filter(f => f.startsWith('clipai_yt_' + ts))
+        .map(f => path.join(DOWNLOAD_DIR, f));
+      if (files.length === 0) return res.status(500).json({ error: 'Downloaded file not found' });
+      actualFile = files[0];
+    }
+
+    const fileSize = fs.statSync(actualFile).size;
+    console.log('[ClipAI] Downloaded:', (fileSize / 1024 / 1024).toFixed(1), 'MB');
+
+    try {
+      const buffer = fs.readFileSync(actualFile);
+
+      // Upload to AssemblyAI using built-in fetch (Node 18+)
+      const uploadRes = await fetch('https://api.assemblyai.com/v2/upload', {
+        method: 'POST',
+        headers: {
+          'authorization': ASSEMBLYAI_KEY,
+          'content-type': 'application/octet-stream'
+        },
+        body: buffer
+      });
+
+      const uploadData = await uploadRes.json();
+      if (!uploadRes.ok) throw new Error(uploadData.error || 'AssemblyAI upload failed');
+
+      const localFileId = path.basename(actualFile);
+      console.log('[ClipAI] Ready, localFileId:', localFileId);
+
+      res.json({ uploadUrl: uploadData.upload_url, localFileId, source: 'youtube' });
+    } catch (fetchErr) {
+      console.error('[ClipAI] Upload error:', fetchErr.message);
+      res.status(500).json({ error: fetchErr.message });
+    } finally {
+      try { fs.unlinkSync(actualFile); } catch(e) {}
+    }
+  });
+});
 setup(() => {
   app.listen(3000, () => console.log('✅ Clipai running at http://localhost:3000'));
 });
