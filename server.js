@@ -322,5 +322,5 @@ app.post('/api/cut-clip', (req, res) => {
 
 setup(() => {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log('✅ Clipai backend running at http://localhost:' + PORT));
+  app.listen(process.env.PORT || 3000, () => console.log('✅ Clipai backend running at http://localhost:' + (process.env.PORT || 3000)));
 });
