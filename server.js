@@ -40,7 +40,7 @@ function setup(callback) {
   if (!fs.existsSync(YTDLP)) {
     pending++;
     console.log('⬇️ Downloading yt-dlp...');
-    downloadFile('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', YTDLP, (err) => {
+    downloadFile('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux', YTDLP, (err) => {
       if (err) console.error('❌ yt-dlp failed:', err);
       else { fs.chmodSync(YTDLP, '755'); console.log('✅ yt-dlp ready!'); }
       if (--pending === 0) callback();
