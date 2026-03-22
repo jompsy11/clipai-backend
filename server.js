@@ -3,7 +3,7 @@ const cors = require('cors');
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const YTDLP = '/usr/local/bin/yt-dlp';
+const https = require('https');
 const app = express();
 
 app.use(cors());
@@ -11,11 +11,50 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'clipaidownloader.html')));
 
+// Download yt-dlp binary on startup
+const YTDLP = path.join(__dirname, 'yt-dlp');
+
+function setupYtDlp(callback) {
+  if (fs.existsSync(YTDLP)) {
+    console.log('✅ yt-dlp already exists');
+    return callback();
+  }
+  console.log('⬇️ Downloading yt-dlp...');
+  const file = fs.createWriteStream(YTDLP);
+  https.get('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', (res) => {
+    // Follow redirects
+    if (res.statusCode === 302 || res.statusCode === 301) {
+      https.get(res.headers.location, (res2) => {
+        res2.pipe(file);
+        file.on('finish', () => {
+          file.close();
+          fs.chmodSync(YTDLP, '755');
+          console.log('✅ yt-dlp downloaded!');
+          callback();
+        });
+      });
+    } else {
+      res.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        fs.chmodSync(YTDLP, '755');
+        console.log('✅ yt-dlp downloaded!');
+        callback();
+      });
+    }
+  }).on('error', (err) => {
+    console.error('❌ Failed to download yt-dlp:', err);
+    callback();
+  });
+}
+
 app.post('/api/convert', (req, res) => {
   const { url, format, quality } = req.body;
   if (!url) return res.status(400).json({ message: 'No URL provided' });
 
   const outputDir = path.join(__dirname, 'downloads');
+  if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir);
+
   const filename = `download_${Date.now()}`;
   let outputPath, cmd;
 
@@ -49,4 +88,8 @@ app.post('/api/convert', (req, res) => {
 });
 
 app.use('/downloads', express.static(path.join(__dirname, 'downloads')));
-app.listen(3000, () => console.log('✅ Clipai running at http://localhost:3000'));
+
+// Start server only after yt-dlp is ready
+setupYtDlp(() => {
+  app.listen(3000, () => console.log('✅ Clipai running at http://localhost:3000'));
+});
