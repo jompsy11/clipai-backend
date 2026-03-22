@@ -84,7 +84,7 @@ app.get('/api/download', (req, res) => {
     }
 
     if (!fs.existsSync(outputPath)) {
-      return res.status(500).json({ message: 'File not created' });
+      return res.status(500).json({ message: 'File not created', error: stderr, cmd: cmd });
     }
 
     const stat = fs.statSync(outputPath);
