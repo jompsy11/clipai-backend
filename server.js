@@ -272,11 +272,20 @@ app.post('/api/cut-clip', (req, res) => {
   console.log('Cutting clip:', clipTitle);
 
   exec(cmd, { maxBuffer: 1024 * 1024 * 500, timeout: 300000 }, (err, stdout, stderr) => {
-    if (err) {
-      console.error('FFmpeg error:', stderr);
-      return res.status(500).json({ error: 'Cut failed: ' + stderr.substring(0, 200) });
+    if (err || !fs.existsSync(outputPath)) {
+      // Get the real error from stderr — skip ffmpeg header lines
+      const lines = (stderr || '').split('\n').filter(l => l.trim());
+      const errorLines = lines.filter(l =>
+        l.includes('Error') || l.includes('error') ||
+        l.includes('Invalid') || l.includes('No such') ||
+        l.includes('failed') || l.includes('Cannot')
+      );
+      const realError = errorLines.length > 0
+        ? errorLines.join(' | ').substring(0, 400)
+        : (stderr || '').split('\n').slice(-5).join(' | ').substring(0, 400);
+      console.error('FFmpeg real error:', realError);
+      return res.status(500).json({ error: 'Cut failed: ' + realError });
     }
-    if (!fs.existsSync(outputPath)) return res.status(500).json({ error: 'Output file not created' });
 
     const stat = fs.statSync(outputPath);
     console.log('✅ Clip cut, size:', stat.size);
