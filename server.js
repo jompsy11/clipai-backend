@@ -265,9 +265,12 @@ app.post('/api/cut-clip', (req, res) => {
   const startSec = (startMs / 1000).toFixed(3);
   const durationSec = ((endMs - startMs) / 1000).toFixed(3);
 
-  const cmd = `"${FFMPEG}" -ss ${startSec} -i "${inputPath}" -t ${durationSec} ` +
-    `-vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" ` +
-    `-c:v libx264 -preset fast -crf 23 -c:a aac -movflags +faststart "${outputPath}"`;
+  const cmd = `"${FFMPEG}" -y -ss ${startSec} -t ${durationSec} -i "${inputPath}" ` +
+    `-vf "scale=480:854:force_original_aspect_ratio=decrease,pad=480:854:(ow-iw)/2:(oh-ih)/2:black" ` +
+    `-c:v libx264 -preset ultrafast -crf 30 -tune fastdecode ` +
+    `-c:a aac -b:a 64k -ac 1 ` +
+    `-movflags +faststart -threads 1 ` +
+    `"${outputPath}"`;
 
   console.log('Cutting clip:', clipTitle);
 
