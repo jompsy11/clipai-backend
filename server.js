@@ -92,6 +92,9 @@ app.post('/api/info', (req, res) => {
   console.log('📥 /api/info:', req.body);
   const { url } = req.body;
   if (!url) return res.status(400).json({ message: 'No URL provided' });
+  if (!fs.existsSync(YTDLP)) {
+    return res.status(503).json({ message: 'Server is still starting up, please wait 30 seconds and try again.' });
+  }
   exec(`"${YTDLP}" --no-playlist --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`,
     { timeout: 60000 }, (err, stdout, stderr) => {
     if (err || !stdout.trim()) return res.status(500).json({ message: 'Could not fetch video info', error: stderr });
