@@ -7,7 +7,18 @@ const https = require('https');
 const http = require('http');
 const app = express();
 
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://clipai-ten.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:5000'
+  ],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-filename']
+}));
+
+// Handle preflight requests
+app.options('*', cors());;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'clipaidownloader.html')));
