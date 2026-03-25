@@ -20,7 +20,6 @@ const UPLOAD_DIR = '/tmp/clipai-uploads';
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// ─── BINARY DOWNLOADER ───────────────────────────────────────────────────────
 function downloadFile(url, dest, callback) {
   const file = fs.createWriteStream(dest);
   const protocol = url.startsWith('https') ? https : http;
@@ -40,19 +39,15 @@ function downloadFile(url, dest, callback) {
 }
 
 function setup(callback) {
-  // Start server immediately — download binaries in background
-  callback();
+  callback(); // start server immediately
 
-  // Always delete and re-download to ensure correct standalone binary
+  // Always re-download yt-dlp standalone binary (has Python built in, no Python needed on server)
   if (fs.existsSync(YTDLP)) fs.unlinkSync(YTDLP);
   console.log('⬇️ Downloading yt-dlp...');
   downloadFile('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux', YTDLP, (err) => {
-      if (err) console.error('❌ yt-dlp failed:', err);
-      else { fs.chmodSync(YTDLP, '755'); console.log('✅ yt-dlp ready!'); }
-    });
-  } else {
-    console.log('✅ yt-dlp already exists');
-  }
+    if (err) console.error('❌ yt-dlp failed:', err);
+    else { fs.chmodSync(YTDLP, '755'); console.log('✅ yt-dlp ready!'); }
+  });
 
   if (!fs.existsSync(FFMPEG)) {
     console.log('⬇️ Downloading ffmpeg...');
@@ -65,7 +60,6 @@ function setup(callback) {
   }
 }
 
-// ─── HELPER: HTTP request with Buffer body ───────────────────────────────────
 function fetchWithBuffer(url, options) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
@@ -88,19 +82,15 @@ function fetchWithBuffer(url, options) {
   });
 }
 
-// ─── CLIPAI DOWNLOADER: GET VIDEO INFO ───────────────────────────────────────
+// ─── GET VIDEO INFO ───────────────────────────────────────────────────────────
 app.post('/api/info', (req, res) => {
   console.log('📥 /api/info:', req.body);
   const { url } = req.body;
   if (!url) return res.status(400).json({ message: 'No URL provided' });
-  if (!fs.existsSync(YTDLP)) {
-    return res.status(503).json({ message: 'Server is still starting up, please wait 30 seconds and try again.' });
-  }
+  if (!fs.existsSync(YTDLP)) return res.status(503).json({ message: 'Server still starting, please wait 30 seconds and try again.' });
   exec(`"${YTDLP}" --no-playlist --no-warnings --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`,
     { timeout: 60000 }, (err, stdout, stderr) => {
-    console.log('yt-dlp stdout:', stdout);
-    console.log('yt-dlp stderr:', stderr);
-    console.log('yt-dlp err:', err ? err.message : 'none');
+    console.log('stdout:', stdout, 'stderr:', stderr, 'err:', err ? err.message : 'none');
     if (err || !stdout.trim()) return res.status(500).json({ message: 'Could not fetch video info', error: stderr });
     const parts = stdout.trim().split('|||');
     const videoId = parts[2] || '';
@@ -113,10 +103,11 @@ app.post('/api/info', (req, res) => {
   });
 });
 
-// ─── CLIPAI DOWNLOADER: DOWNLOAD FILE ────────────────────────────────────────
+// ─── DOWNLOAD FILE ────────────────────────────────────────────────────────────
 app.get('/api/download', (req, res) => {
   const { url, format, quality } = req.query;
   if (!url) return res.status(400).send('No URL');
+  if (!fs.existsSync(YTDLP)) return res.status(503).json({ message: 'Server still starting, try again in 30 seconds.' });
   const filename = `clipai_${Date.now()}`;
   let outputPath, cmd, dlFilename, contentType;
   if (format === 'mp3') {
@@ -144,37 +135,21 @@ app.get('/api/download', (req, res) => {
   });
 });
 
-// ─── CLIPAI APP: YOUTUBE UPLOAD ───────────────────────────────────────────────
+// ─── YOUTUBE UPLOAD (for clipai-ten.vercel.app) ───────────────────────────────
 app.post('/api/youtube-upload', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'No URL provided' });
   console.log('📥 /api/youtube-upload:', url);
-
-  if (!fs.existsSync(YTDLP)) {
-    return res.status(503).json({ error: 'yt-dlp not ready yet, please wait 30 seconds and try again' });
-  }
-
+  if (!fs.existsSync(YTDLP)) return res.status(503).json({ error: 'Server still starting, please wait 30 seconds.' });
   const localFileId = `yt_${Date.now()}`;
   const outputPath = path.join(UPLOAD_DIR, localFileId + '.mp4');
-
   const cmd = `"${YTDLP}" --ffmpeg-location "${FFMPEG}" -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
-  console.log('Running:', cmd);
-
   exec(cmd, { maxBuffer: 1024 * 1024 * 200, timeout: 600000 }, async (err, stdout, stderr) => {
-    if (err) {
-      console.error('yt-dlp error:', stderr);
-      return res.status(500).json({ error: 'YouTube download failed: ' + stderr.substring(0, 200) });
-    }
+    if (err) return res.status(500).json({ error: 'YouTube download failed: ' + stderr.substring(0, 200) });
     if (!fs.existsSync(outputPath)) return res.status(500).json({ error: 'Downloaded file not found' });
-
-    const stat = fs.statSync(outputPath);
-    console.log('✅ YouTube video downloaded, size:', stat.size);
-
+    console.log('✅ YouTube downloaded, size:', fs.statSync(outputPath).size);
     const ASSEMBLYAI_KEY = process.env.ASSEMBLYAI_API_KEY;
-    if (!ASSEMBLYAI_KEY) {
-      return res.json({ localFileId, uploadUrl: `https://${req.headers.host}/api/serve-upload/${localFileId}` });
-    }
-
+    if (!ASSEMBLYAI_KEY) return res.json({ localFileId, uploadUrl: `https://${req.headers.host}/api/serve-upload/${localFileId}` });
     try {
       const fileData = fs.readFileSync(outputPath);
       const uploadRes = await fetchWithBuffer('https://api.assemblyai.com/v2/upload', {
@@ -192,7 +167,7 @@ app.post('/api/youtube-upload', async (req, res) => {
   });
 });
 
-// ─── CLIPAI APP: SERVE UPLOADED FILE ─────────────────────────────────────────
+// ─── SERVE UPLOADED FILE ──────────────────────────────────────────────────────
 app.get('/api/serve-upload/:id', (req, res) => {
   const filePath = path.join(UPLOAD_DIR, req.params.id + '.mp4');
   if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
@@ -202,26 +177,19 @@ app.get('/api/serve-upload/:id', (req, res) => {
   fs.createReadStream(filePath).pipe(res);
 });
 
-// ─── CLIPAI APP: LOCAL FILE UPLOAD ───────────────────────────────────────────
+// ─── LOCAL FILE UPLOAD (for clipai-ten.vercel.app) ────────────────────────────
 app.post('/api/upload-local', async (req, res) => {
   const filename = decodeURIComponent(req.headers['x-filename'] || 'upload.mp4');
   const localFileId = `upload_${Date.now()}`;
   const ext = path.extname(filename) || '.mp4';
   const outputPath = path.join(UPLOAD_DIR, localFileId + ext);
-  console.log('📥 /api/upload-local receiving:', filename);
-
+  console.log('📥 /api/upload-local:', filename);
   const writeStream = fs.createWriteStream(outputPath);
   req.pipe(writeStream);
-
   writeStream.on('finish', async () => {
-    const stat = fs.statSync(outputPath);
-    console.log('✅ File saved locally, size:', stat.size);
-
+    console.log('✅ File saved, size:', fs.statSync(outputPath).size);
     const ASSEMBLYAI_KEY = process.env.ASSEMBLYAI_API_KEY;
-    if (!ASSEMBLYAI_KEY) {
-      return res.json({ localFileId, uploadUrl: `https://${req.headers.host}/api/serve-upload-raw/${localFileId}${ext}` });
-    }
-
+    if (!ASSEMBLYAI_KEY) return res.json({ localFileId, uploadUrl: `https://${req.headers.host}/api/serve-upload-raw/${localFileId}${ext}` });
     try {
       const fileData = fs.readFileSync(outputPath);
       const uploadRes = await fetchWithBuffer('https://api.assemblyai.com/v2/upload', {
@@ -237,11 +205,7 @@ app.post('/api/upload-local', async (req, res) => {
       res.json({ localFileId, uploadUrl: `https://${req.headers.host}/api/serve-upload-raw/${localFileId}${ext}` });
     }
   });
-
-  writeStream.on('error', (err) => {
-    console.error('Write error:', err);
-    res.status(500).json({ error: 'Failed to save file' });
-  });
+  writeStream.on('error', (err) => res.status(500).json({ error: 'Failed to save file' }));
 });
 
 app.get('/api/serve-upload-raw/:filename', (req, res) => {
@@ -253,64 +217,36 @@ app.get('/api/serve-upload-raw/:filename', (req, res) => {
   fs.createReadStream(filePath).pipe(res);
 });
 
-// ─── CLIPAI APP: CUT CLIP ────────────────────────────────────────────────────
+// ─── CUT CLIP (for clipai-ten.vercel.app) ─────────────────────────────────────
 app.post('/api/cut-clip', (req, res) => {
   const { localFileId, startMs, endMs, clipTitle } = req.body;
   if (!localFileId) return res.status(400).json({ error: 'localFileId required' });
-
-  if (!fs.existsSync(FFMPEG)) {
-    return res.status(503).json({ error: 'ffmpeg not ready yet, please wait 30 seconds and try again' });
-  }
-
+  if (!fs.existsSync(FFMPEG)) return res.status(503).json({ error: 'ffmpeg not ready yet, please wait 30 seconds.' });
   const files = fs.readdirSync(UPLOAD_DIR);
   const match = files.find(f => f.startsWith(localFileId));
   if (!match) return res.status(404).json({ error: 'Source file not found. Please re-upload.' });
-
   const inputPath = path.join(UPLOAD_DIR, match);
   const outputPath = path.join(DOWNLOAD_DIR, `clip_${Date.now()}.mp4`);
-
   const startSec = (startMs / 1000).toFixed(3);
   const durationSec = ((endMs - startMs) / 1000).toFixed(3);
-
-  const cmd = `"${FFMPEG}" -y -ss ${startSec} -t ${durationSec} -i "${inputPath}" ` +
-    `-vf "scale=480:854:force_original_aspect_ratio=decrease,pad=480:854:(ow-iw)/2:(oh-ih)/2:black" ` +
-    `-c:v libx264 -preset ultrafast -crf 30 -tune fastdecode ` +
-    `-c:a aac -b:a 64k -ac 1 ` +
-    `-movflags +faststart -threads 1 ` +
-    `"${outputPath}"`;
-
+  const cmd = `"${FFMPEG}" -ss ${startSec} -i "${inputPath}" -t ${durationSec} ` +
+    `-vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" ` +
+    `-c:v libx264 -preset fast -crf 23 -c:a aac -movflags +faststart "${outputPath}"`;
   console.log('Cutting clip:', clipTitle);
-
   exec(cmd, { maxBuffer: 1024 * 1024 * 500, timeout: 300000 }, (err, stdout, stderr) => {
-    if (err || !fs.existsSync(outputPath)) {
-      // Get the real error from stderr — skip ffmpeg header lines
-      const lines = (stderr || '').split('\n').filter(l => l.trim());
-      const errorLines = lines.filter(l =>
-        l.includes('Error') || l.includes('error') ||
-        l.includes('Invalid') || l.includes('No such') ||
-        l.includes('failed') || l.includes('Cannot')
-      );
-      const realError = errorLines.length > 0
-        ? errorLines.join(' | ').substring(0, 400)
-        : (stderr || '').split('\n').slice(-5).join(' | ').substring(0, 400);
-      console.error('FFmpeg real error:', realError);
-      return res.status(500).json({ error: 'Cut failed: ' + realError });
-    }
-
-    const stat = fs.statSync(outputPath);
-    console.log('✅ Clip cut, size:', stat.size);
-
+    if (err) return res.status(500).json({ error: 'Cut failed: ' + stderr.substring(0, 200) });
+    if (!fs.existsSync(outputPath)) return res.status(500).json({ error: 'Output file not created' });
+    console.log('✅ Clip cut, size:', fs.statSync(outputPath).size);
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Disposition', 'attachment; filename="clip.mp4"');
-    res.setHeader('Content-Length', stat.size);
-
+    res.setHeader('Content-Length', fs.statSync(outputPath).size);
     const stream = fs.createReadStream(outputPath);
     stream.pipe(res);
     stream.on('close', () => { setTimeout(() => { try { fs.unlinkSync(outputPath); } catch(e) {} }, 5000); });
   });
 });
 
-// ─── START ───────────────────────────────────────────────────────────────────
+// ─── START ────────────────────────────────────────────────────────────────────
 setup(() => {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => console.log('✅ Clipai backend running on port ' + PORT));
