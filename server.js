@@ -1,5 +1,4 @@
 const express = require('express');
-const cors = require('cors');
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -7,14 +6,18 @@ const https = require('https');
 const http = require('http');
 const app = express();
 
-// Allow ALL origins (fixes CORS for Vercel)
+// ─── CORS — must be first, before everything else ─────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-filename');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
   next();
 });
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'clipaidownloader.html')));
@@ -28,10 +31,8 @@ const UPLOAD_DIR = '/tmp/clipai-uploads';
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// Bot bypass args — tries android client first which bypasses bot detection
 const BYPASS = `--extractor-args "youtube:player_client=android,web" --no-warnings`;
 
-// Cookies arg (optional, used if YT_COOKIES env is set)
 function cookiesArg() {
   return fs.existsSync(COOKIES_FILE) ? `--cookies "${COOKIES_FILE}"` : '';
 }
@@ -59,15 +60,13 @@ function downloadFile(url, dest, callback) {
 }
 
 function setup(callback) {
-  callback(); // start server immediately
+  callback();
 
-  // Write YouTube cookies from env if provided
   if (process.env.YT_COOKIES) {
     fs.writeFileSync(COOKIES_FILE, process.env.YT_COOKIES);
     console.log('✅ YouTube cookies written');
   }
 
-  // Always re-download yt-dlp standalone binary
   if (fs.existsSync(YTDLP)) fs.unlinkSync(YTDLP);
   console.log('⬇️ Downloading yt-dlp...');
   downloadFile('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux', YTDLP, (err) => {
@@ -116,9 +115,8 @@ app.post('/api/info', (req, res) => {
   if (!fs.existsSync(YTDLP)) return res.status(503).json({ message: 'Server still starting, please wait 30 seconds and try again.' });
 
   const cmd = `"${YTDLP}" ${ytArgs()} --no-playlist --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`;
-  console.log('Running:', cmd);
   exec(cmd, { timeout: 60000 }, (err, stdout, stderr) => {
-    console.log('stdout:', stdout, 'stderr:', stderr, 'err:', err ? err.message : 'none');
+    console.log('stdout:', stdout, 'stderr:', stderr);
     if (err || !stdout.trim()) return res.status(500).json({ message: 'Could not fetch video info', error: stderr });
     const parts = stdout.trim().split('|||');
     const videoId = parts[2] || '';
@@ -166,7 +164,7 @@ app.get('/api/download', (req, res) => {
   });
 });
 
-// ─── YOUTUBE UPLOAD (for clipai-ten.vercel.app) ───────────────────────────────
+// ─── YOUTUBE UPLOAD ───────────────────────────────────────────────────────────
 app.post('/api/youtube-upload', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'No URL provided' });
@@ -212,7 +210,7 @@ app.get('/api/serve-upload/:id', (req, res) => {
   fs.createReadStream(filePath).pipe(res);
 });
 
-// ─── LOCAL FILE UPLOAD (for clipai-ten.vercel.app) ────────────────────────────
+// ─── LOCAL FILE UPLOAD ────────────────────────────────────────────────────────
 app.post('/api/upload-local', async (req, res) => {
   const filename = decodeURIComponent(req.headers['x-filename'] || 'upload.mp4');
   const localFileId = `upload_${Date.now()}`;
@@ -254,52 +252,46 @@ app.get('/api/serve-upload-raw/:filename', (req, res) => {
   fs.createReadStream(filePath).pipe(res);
 });
 
-// ─── CUT CLIP (for clipai-ten.vercel.app) ─────────────────────────────────────
+// ─── CUT CLIP ─────────────────────────────────────────────────────────────────
 app.post('/api/cut-clip', (req, res) => {
   const { localFileId, startMs, endMs, clipTitle } = req.body;
   if (!localFileId) return res.status(400).json({ error: 'localFileId required' });
-  if (!fs.existsSync(FFMPEG)) {
-    // Wait up to 30 seconds for ffmpeg to be ready
-    let waited = 0;
-    const wait = setInterval(() => {
-      waited += 1000;
-      if (fs.existsSync(FFMPEG)) {
-        clearInterval(wait);
-        return res.status(200).json({ retry: true });
-      }
-      if (waited >= 30000) {
-        clearInterval(wait);
-        return res.status(503).json({ error: 'ffmpeg not ready, please try again.' });
-      }
-    }, 1000);
-    return;
-  }
 
-  const files = fs.readdirSync(UPLOAD_DIR);
-  const match = files.find(f => f.startsWith(localFileId));
-  if (!match) return res.status(404).json({ error: 'Source file not found. Please re-upload.' });
+  // Wait for ffmpeg if not ready yet
+  const trycut = () => {
+    if (!fs.existsSync(FFMPEG)) {
+      console.log('⏳ Waiting for ffmpeg...');
+      return setTimeout(trycut, 2000);
+    }
 
-  const inputPath = path.join(UPLOAD_DIR, match);
-  const outputPath = path.join(DOWNLOAD_DIR, `clip_${Date.now()}.mp4`);
-  const startSec = (startMs / 1000).toFixed(3);
-  const durationSec = ((endMs - startMs) / 1000).toFixed(3);
+    const files = fs.readdirSync(UPLOAD_DIR);
+    const match = files.find(f => f.startsWith(localFileId));
+    if (!match) return res.status(404).json({ error: 'Source file not found. Please re-upload.' });
 
-  const cmd = `"${FFMPEG}" -ss ${startSec} -i "${inputPath}" -t ${durationSec} ` +
-    `-vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" ` +
-    `-c:v libx264 -preset fast -crf 23 -c:a aac -movflags +faststart "${outputPath}"`;
+    const inputPath = path.join(UPLOAD_DIR, match);
+    const outputPath = path.join(DOWNLOAD_DIR, `clip_${Date.now()}.mp4`);
+    const startSec = (startMs / 1000).toFixed(3);
+    const durationSec = ((endMs - startMs) / 1000).toFixed(3);
 
-  console.log('Cutting clip:', clipTitle);
-  exec(cmd, { maxBuffer: 1024 * 1024 * 500, timeout: 300000 }, (err, stdout, stderr) => {
-    if (err) return res.status(500).json({ error: 'Cut failed: ' + stderr.substring(0, 200) });
-    if (!fs.existsSync(outputPath)) return res.status(500).json({ error: 'Output file not created' });
-    console.log('✅ Clip cut, size:', fs.statSync(outputPath).size);
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Disposition', 'attachment; filename="clip.mp4"');
-    res.setHeader('Content-Length', fs.statSync(outputPath).size);
-    const stream = fs.createReadStream(outputPath);
-    stream.pipe(res);
-    stream.on('close', () => { setTimeout(() => { try { fs.unlinkSync(outputPath); } catch(e) {} }, 5000); });
-  });
+    const cmd = `"${FFMPEG}" -ss ${startSec} -i "${inputPath}" -t ${durationSec} ` +
+      `-vf "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black" ` +
+      `-c:v libx264 -preset fast -crf 23 -c:a aac -movflags +faststart "${outputPath}"`;
+
+    console.log('Cutting clip:', clipTitle);
+    exec(cmd, { maxBuffer: 1024 * 1024 * 500, timeout: 300000 }, (err, stdout, stderr) => {
+      if (err) return res.status(500).json({ error: 'Cut failed: ' + stderr.substring(0, 200) });
+      if (!fs.existsSync(outputPath)) return res.status(500).json({ error: 'Output file not created' });
+      console.log('✅ Clip cut, size:', fs.statSync(outputPath).size);
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', 'attachment; filename="clip.mp4"');
+      res.setHeader('Content-Length', fs.statSync(outputPath).size);
+      const stream = fs.createReadStream(outputPath);
+      stream.pipe(res);
+      stream.on('close', () => { setTimeout(() => { try { fs.unlinkSync(outputPath); } catch(e) {} }, 5000); });
+    });
+  };
+
+  trycut();
 });
 
 // ─── START ────────────────────────────────────────────────────────────────────
