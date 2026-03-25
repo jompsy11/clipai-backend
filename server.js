@@ -95,8 +95,11 @@ app.post('/api/info', (req, res) => {
   if (!fs.existsSync(YTDLP)) {
     return res.status(503).json({ message: 'Server is still starting up, please wait 30 seconds and try again.' });
   }
-  exec(`"${YTDLP}" --no-playlist --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`,
+  exec(`"${YTDLP}" --no-playlist --no-warnings --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`,
     { timeout: 60000 }, (err, stdout, stderr) => {
+    console.log('yt-dlp stdout:', stdout);
+    console.log('yt-dlp stderr:', stderr);
+    console.log('yt-dlp err:', err ? err.message : 'none');
     if (err || !stdout.trim()) return res.status(500).json({ message: 'Could not fetch video info', error: stderr });
     const parts = stdout.trim().split('|||');
     const videoId = parts[2] || '';
