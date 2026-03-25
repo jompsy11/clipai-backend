@@ -21,9 +21,16 @@ const UPLOAD_DIR = '/tmp/clipai-uploads';
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-// Cookies arg — added to every yt-dlp command
+// Bot bypass args — tries android client first which bypasses bot detection
+const BYPASS = `--extractor-args "youtube:player_client=android,web" --no-warnings`;
+
+// Cookies arg (optional, used if YT_COOKIES env is set)
 function cookiesArg() {
   return fs.existsSync(COOKIES_FILE) ? `--cookies "${COOKIES_FILE}"` : '';
+}
+
+function ytArgs() {
+  return `${BYPASS} ${cookiesArg()}`;
 }
 
 function downloadFile(url, dest, callback) {
@@ -47,15 +54,13 @@ function downloadFile(url, dest, callback) {
 function setup(callback) {
   callback(); // start server immediately
 
-  // Write YouTube cookies from environment variable
+  // Write YouTube cookies from env if provided
   if (process.env.YT_COOKIES) {
     fs.writeFileSync(COOKIES_FILE, process.env.YT_COOKIES);
-    console.log('✅ YouTube cookies written to', COOKIES_FILE);
-  } else {
-    console.log('⚠️ No YT_COOKIES env variable set — YouTube may block requests');
+    console.log('✅ YouTube cookies written');
   }
 
-  // Always re-download yt-dlp standalone binary (has Python built in)
+  // Always re-download yt-dlp standalone binary
   if (fs.existsSync(YTDLP)) fs.unlinkSync(YTDLP);
   console.log('⬇️ Downloading yt-dlp...');
   downloadFile('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux', YTDLP, (err) => {
@@ -103,7 +108,8 @@ app.post('/api/info', (req, res) => {
   if (!url) return res.status(400).json({ message: 'No URL provided' });
   if (!fs.existsSync(YTDLP)) return res.status(503).json({ message: 'Server still starting, please wait 30 seconds and try again.' });
 
-  const cmd = `"${YTDLP}" ${cookiesArg()} --no-playlist --no-warnings --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`;
+  const cmd = `"${YTDLP}" ${ytArgs()} --no-playlist --print "%(title)s|||%(duration_string)s|||%(id)s" "${url}"`;
+  console.log('Running:', cmd);
   exec(cmd, { timeout: 60000 }, (err, stdout, stderr) => {
     console.log('stdout:', stdout, 'stderr:', stderr, 'err:', err ? err.message : 'none');
     if (err || !stdout.trim()) return res.status(500).json({ message: 'Could not fetch video info', error: stderr });
@@ -131,13 +137,13 @@ app.get('/api/download', (req, res) => {
     const bitrate = quality ? quality.replace(' kbps', '') : '192';
     outputPath = path.join(DOWNLOAD_DIR, filename + '.mp3');
     dlFilename = 'audio.mp3'; contentType = 'audio/mpeg';
-    cmd = `"${YTDLP}" ${cookiesArg()} --ffmpeg-location "${FFMPEG}" -x --audio-format mp3 --audio-quality ${bitrate}K -o "${outputPath}" "${url}"`;
+    cmd = `"${YTDLP}" ${ytArgs()} --ffmpeg-location "${FFMPEG}" -x --audio-format mp3 --audio-quality ${bitrate}K -o "${outputPath}" "${url}"`;
   } else {
     const heights = { '480p': 480, '720p': 720, '1080p': 1080, '4K': 2160 };
     const h = heights[quality] || 720;
     outputPath = path.join(DOWNLOAD_DIR, filename + '.mp4');
     dlFilename = 'video.mp4'; contentType = 'video/mp4';
-    cmd = `"${YTDLP}" ${cookiesArg()} --ffmpeg-location "${FFMPEG}" -f "bestvideo[height<=${h}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${h}][ext=mp4]/best[height<=${h}]" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
+    cmd = `"${YTDLP}" ${ytArgs()} --ffmpeg-location "${FFMPEG}" -f "bestvideo[height<=${h}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${h}][ext=mp4]/best[height<=${h}]" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
   }
 
   exec(cmd, { maxBuffer: 1024 * 1024 * 100, timeout: 600000 }, (err, stdout, stderr) => {
@@ -162,7 +168,7 @@ app.post('/api/youtube-upload', async (req, res) => {
 
   const localFileId = `yt_${Date.now()}`;
   const outputPath = path.join(UPLOAD_DIR, localFileId + '.mp4');
-  const cmd = `"${YTDLP}" ${cookiesArg()} --ffmpeg-location "${FFMPEG}" -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
+  const cmd = `"${YTDLP}" ${ytArgs()} --ffmpeg-location "${FFMPEG}" -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
 
   exec(cmd, { maxBuffer: 1024 * 1024 * 200, timeout: 600000 }, async (err, stdout, stderr) => {
     if (err) return res.status(500).json({ error: 'YouTube download failed: ' + stderr.substring(0, 200) });
