@@ -7,18 +7,14 @@ const https = require('https');
 const http = require('http');
 const app = express();
 
-app.use(cors({
-  origin: [
-    'https://clipai-ten.vercel.app',
-    'http://localhost:3000',
-    'http://localhost:5000'
-  ],
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-filename']
-}));
-
-// Handle preflight requests
-app.options('*', cors());;
+// Allow ALL origins (fixes CORS for Vercel)
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-filename');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'clipaidownloader.html')));
@@ -262,7 +258,22 @@ app.get('/api/serve-upload-raw/:filename', (req, res) => {
 app.post('/api/cut-clip', (req, res) => {
   const { localFileId, startMs, endMs, clipTitle } = req.body;
   if (!localFileId) return res.status(400).json({ error: 'localFileId required' });
-  if (!fs.existsSync(FFMPEG)) return res.status(503).json({ error: 'ffmpeg not ready yet, please wait 30 seconds.' });
+  if (!fs.existsSync(FFMPEG)) {
+    // Wait up to 30 seconds for ffmpeg to be ready
+    let waited = 0;
+    const wait = setInterval(() => {
+      waited += 1000;
+      if (fs.existsSync(FFMPEG)) {
+        clearInterval(wait);
+        return res.status(200).json({ retry: true });
+      }
+      if (waited >= 30000) {
+        clearInterval(wait);
+        return res.status(503).json({ error: 'ffmpeg not ready, please try again.' });
+      }
+    }, 1000);
+    return;
+  }
 
   const files = fs.readdirSync(UPLOAD_DIR);
   const match = files.find(f => f.startsWith(localFileId));
