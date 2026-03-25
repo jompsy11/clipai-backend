@@ -43,9 +43,10 @@ function setup(callback) {
   // Start server immediately — download binaries in background
   callback();
 
-  if (!fs.existsSync(YTDLP)) {
-    console.log('⬇️ Downloading yt-dlp...');
-    downloadFile('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux', YTDLP, (err) => {
+  // Always delete and re-download to ensure correct standalone binary
+  if (fs.existsSync(YTDLP)) fs.unlinkSync(YTDLP);
+  console.log('⬇️ Downloading yt-dlp...');
+  downloadFile('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux', YTDLP, (err) => {
       if (err) console.error('❌ yt-dlp failed:', err);
       else { fs.chmodSync(YTDLP, '755'); console.log('✅ yt-dlp ready!'); }
     });
